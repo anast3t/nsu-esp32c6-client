@@ -1,0 +1,20 @@
+{
+  "C_Cpp.intelliSenseEngine": "default",
+  "idf.espIdfPath": "/Users/anastet/esp/esp-idf",
+  "idf.toolsPath": "/Users/anastet/.espressif",
+"idf.pythonInstallPath": "/opt/homebrew/bin/python3",
+"idf.openOcdConfigs": [
+    "board/esp32c6-builtin.cfg"
+],
+"idf.customExtraVars": {
+    "IDF_TARGET": "esp32c6"
+},
+"idf.port": "/dev/tty.usbmodem59580044951",
+"idf.flashType": "UART",
+"files.associations": {
+    "cstdint": "c",
+    "nvs_flash.h": "c",
+    "led_strip.h": "c",
+    "esp_cpu.h": "c"
+}
+}

@@ -1,0 +1,5 @@
+dependencies:
+  espressif/led_strip: "^3.0.0"
+  # espressif/esp_wifi: "*"
+  # espressif/esp_netif: "*"
+  # espressif/nvs_flash: "*"
