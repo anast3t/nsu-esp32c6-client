@@ -1,15 +1,6 @@
-/* --------------------------------------------------------------------------
- *  Wi‑Fi LED Client (ESP32‑C6)
- *  – STA‑режим, подключается к SoftAP "ESP32C6_AP"
- *  – TCP‑клиент на 192.168.4.1:5000
- *  – Принимает строки "LED:ON" / "LED:OFF" и управляет WS2812 на GPIO 8
- *  – Жёсткий выбор стандарта Wi‑Fi (4 или 6) аналогично серверу
- *  – Использует select() + тайм‑аут вместо блокирующего recv
- *  – Логирует задержку от получения данных до переключения светодиода
- *  – Переносим на любые ESP‑SoC: задача создаётся через xTaskCreate,
- *    а на многоядерных чипах при необходимости закрепляется
- *  – Компилируется на ESP‑IDF ≥ v5.4
- * -------------------------------------------------------------------------*/
+/* ------------------------------------------------------------------
+ *  ESP32-C6 Wi-Fi LED Client
+ * ----------------------------------------------------------------- */
 #include <string.h>
 #include <sys/select.h>
 #include "freertos/FreeRTOS.h"
@@ -23,215 +14,115 @@
 #include "driver/gpio.h"
 #include "led_strip.h"
 #include "esp_cpu.h"
-#include "esp_system.h"   /* CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ */
+#include "esp_system.h"
 
-/* -------------------------- Wi‑Fi ---------------------------------------- */
-#define WIFI_SSID      "ESP32C6_AP"
-#define WIFI_PASS      "12345678"
-#define WIFI_MAX_RETRY 10
-#define SERVER_IP      "192.168.4.1"   /* IP SoftAP */
-#define SERVER_PORT    5000
+#define WIFI_SSID  "ESP32C6_AP"
+#define WIFI_PASS  "12345678"
+#define SRV_IP     "192.168.4.1"
+#define SRV_PORT   5000
+#define LED_GPIO   8
+#define LED_COUNT  1
 
-/* ---- Жёсткий выбор стандарта Wi‑Fi для STA (BGN‑only или AX‑only) ------ */
-typedef enum {
-    WIFI_STD_4,   // 802.11b/g/n
-    WIFI_STD_6    // 802.11ax
-} wifi_standard_t;
+static const char *TAG="LED_CLIENT";
+static led_strip_handle_t strip;
+static TaskHandle_t        cli_task;
 
-static esp_err_t wifi_sta_set_standard_strict(wifi_standard_t std)
-{
-    wifi_protocols_t proto = {0};
-    switch (std) {
-        case WIFI_STD_4:
-            proto.ghz_2g = WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N;
-            break;
-        case WIFI_STD_6:
-            proto.ghz_2g = WIFI_PROTOCOL_11AX;
-            break;
-        default:
-            return ESP_ERR_INVALID_ARG;
-    }
-    return esp_wifi_set_protocols(WIFI_IF_STA, &proto);
+/* ---------- Wi-Fi 4 / 6 ------------------------------------------------- */
+typedef enum { WIFI_STD_4, WIFI_STD_6 } wifi_std_t;
+static esp_err_t wifi_sta_proto(wifi_std_t s){
+    wifi_protocols_t p={0};
+    p.ghz_2g=(s==WIFI_STD_4)?
+             (WIFI_PROTOCOL_11B|WIFI_PROTOCOL_11G|WIFI_PROTOCOL_11N):
+             WIFI_PROTOCOL_11AX;
+    return esp_wifi_set_protocols(WIFI_IF_STA,&p);
 }
 
-/* ------------------------- Светодиод ------------------------------------ */
-#define LED_STRIP_GPIO   8
-#define LED_STRIP_COUNT  1
+/* ---------- Wi-Fi init -------------------------------------------------- */
+static EventGroupHandle_t eg;
+#define BIT_OK  BIT0
+#define BIT_FAIL BIT1
 
-static const char *TAG = "LED_CLIENT";
-static EventGroupHandle_t s_wifi_event_group;
-static led_strip_handle_t led_strip;
-static TaskHandle_t tcp_task_handle = NULL;
-static int retry_cnt = 0;
-
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT      BIT1
-
-/* ------------------- Wi‑Fi event handler -------------------------------- */
-static void wifi_event_handler(void *arg, esp_event_base_t event_base,
-                               int32_t event_id, void *event_data)
-{
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (retry_cnt < WIFI_MAX_RETRY) {
-            esp_wifi_connect();
-            retry_cnt++;
-            ESP_LOGI(TAG, "retry to connect to the AP");
-        } else {
-            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-        }
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        char ip_str[16];
-        ip4_addr_t tmp; tmp.addr = event->ip_info.ip.addr;
-        ip4addr_ntoa_r(&tmp, ip_str, sizeof(ip_str));
-        ESP_LOGI(TAG, "got ip: %s", ip_str);
-        retry_cnt = 0;
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+static void evt(void* a,esp_event_base_t b,int32_t id,void* d){
+    if(b==WIFI_EVENT && id==WIFI_EVENT_STA_START) esp_wifi_connect();
+    else if(b==WIFI_EVENT && id==WIFI_EVENT_STA_DISCONNECTED){
+        esp_wifi_connect(); ESP_LOGW(TAG,"re-connect");
+    } else if(b==IP_EVENT && id==IP_EVENT_STA_GOT_IP){
+        xEventGroupSetBits(eg,BIT_OK);
     }
 }
 
-static void wifi_init_sta(void)
-{
-    s_wifi_event_group = xEventGroupCreate();
-
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+static void wifi_init(void){
+    eg=xEventGroupCreate();
+    esp_netif_init(); esp_event_loop_create_default();
     esp_netif_create_default_wifi_sta();
+    wifi_init_config_t cfg=WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&cfg);
 
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    esp_event_handler_instance_t h1,h2;
+    esp_event_handler_instance_register(WIFI_EVENT,ESP_EVENT_ANY_ID,evt,NULL,&h1);
+    esp_event_handler_instance_register(IP_EVENT,IP_EVENT_STA_GOT_IP,evt,NULL,&h2);
 
-    esp_event_handler_instance_t any_id, got_ip_id;
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                                        wifi_event_handler, NULL, &any_id));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                                        wifi_event_handler, NULL, &got_ip_id));
+    wifi_config_t c={.sta={.ssid=WIFI_SSID,.password=WIFI_PASS,
+                           .threshold.authmode=WIFI_AUTH_WPA2_PSK}};
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_set_config(WIFI_IF_STA,&c);
 
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid     = WIFI_SSID,
-            .password = WIFI_PASS,
-            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
-        },
-    };
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    wifi_sta_proto(WIFI_STD_6);               /* Wi-Fi 6 only */
+    esp_wifi_set_ps(WIFI_PS_NONE);            /* no power-save */
+    esp_wifi_start();
 
-    /* Жёстко задаём протокол: Wi‑Fi 6 only (можно сменить на WIFI_STD_4) */
-    ESP_ERROR_CHECK(wifi_sta_set_standard_strict(WIFI_STD_6));
-
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                           pdFALSE, pdFALSE, portMAX_DELAY);
-    if (bits & WIFI_FAIL_BIT) {
-        ESP_LOGE(TAG, "Failed to connect to SSID %s", WIFI_SSID);
-    } else {
-        ESP_LOGI(TAG, "Connected to SSID %s", WIFI_SSID);
-    }
+    xEventGroupWaitBits(eg,BIT_OK,pdFALSE,pdFALSE,portMAX_DELAY);
+    wifi_protocols_t chk; esp_wifi_get_protocols(WIFI_IF_STA,&chk);
+    ESP_LOGI(TAG,"STA proto 2G=0x%X (AX=0x20)",chk.ghz_2g);
 }
 
-/* ------------------------- LED helper ----------------------------------- */
-static void led_set(bool on)
-{
-    uint8_t val = on ? 32 : 0;
-    led_strip_set_pixel(led_strip, 0, val, 0, 0);
-    led_strip_refresh(led_strip);
-}
-
-/* ------------------------- TCP client ----------------------------------- */
-static void tcp_client_task(void *arg)
-{
-    for (;;) {
-        int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
-        struct sockaddr_in dest = {
-            .sin_family      = AF_INET,
-            .sin_port        = htons(SERVER_PORT),
-            .sin_addr.s_addr = inet_addr(SERVER_IP)
-        };
-        ESP_LOGI(TAG, "Connecting to %s:%d", SERVER_IP, SERVER_PORT);
-        if (connect(sock, (struct sockaddr *)&dest, sizeof(dest)) != 0) {
-            ESP_LOGE(TAG, "connect failed, retry in 1 s");
-            close(sock);
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            continue;
+/* ---------- TCP client task -------------------------------------------- */
+static void client(void *a){
+    const uint32_t cpu=CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ*1000000UL;
+    for(;;){
+        int s=socket(AF_INET,SOCK_STREAM,0);
+        struct sockaddr_in d={.sin_family=AF_INET,.sin_port=htons(SRV_PORT),
+                              .sin_addr.s_addr=inet_addr(SRV_IP)};
+        if(connect(s,(void*)&d,sizeof(d))!=0){
+            ESP_LOGE(TAG,"connect fail"); close(s); vTaskDelay(pdMS_TO_TICKS(1000)); continue;
         }
+        int yes=1; setsockopt(s,IPPROTO_TCP,TCP_NODELAY,&yes,sizeof(yes));
 
-        int yes = 1;
-        setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
-        setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-
-        ESP_LOGI(TAG, "Connected, waiting for data");
-        const uint32_t cpu_hz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ * 1000000UL;
-        char rx[128];
-        fd_set rfds; struct timeval tv;
-
-        while (1) {
-            FD_ZERO(&rfds);
-            FD_SET(sock, &rfds);
-            tv.tv_sec = 5; tv.tv_usec = 0;
-            int sel = select(sock + 1, &rfds, NULL, NULL, &tv);
-            if (sel < 0) {
-                ESP_LOGE(TAG, "select error");
-                break;
-            }
-            if (sel == 0) continue; // timeout
-
-            uint32_t t_start = esp_cpu_get_cycle_count();
-            int n = recv(sock, rx, sizeof(rx) - 1, 0);
-            if (n <= 0) {
-                ESP_LOGW(TAG, "connection closed");
-                break;
-            }
-            rx[n] = '\0';
-            char *saveptr;
-            char *line = strtok_r(rx, "\n", &saveptr);
-            while (line) {
-                if (strstr(line, "LED:ON") || strstr(line, "LED:OFF")) {
-                    bool on = strstr(line, "LED:ON") != NULL;
-                    led_set(on);
-                    uint32_t cycles = esp_cpu_get_cycle_count() - t_start;
-                    float ns = (float)cycles * 1e9f / (float)cpu_hz;
-                    float ms = ns / 1e6f;
-                    ESP_LOGI(TAG, "LED %s | cycles:%lu %.2f ns (%.6f ms)",
-                             on ? "ON" : "OFF", cycles, ns, ms);
+        fd_set rfds; struct timeval tv; char buf[128];
+        for(;;){
+            FD_ZERO(&rfds); FD_SET(s,&rfds);
+            tv.tv_sec=0; tv.tv_usec=20000; /* 20 ms дворник */
+            if(select(s+1,&rfds,NULL,NULL,&tv)<=0) continue;
+            uint32_t t0=esp_cpu_get_cycle_count();
+            int n=recv(s,buf,sizeof(buf)-1,0);
+            if(n<=0){ ESP_LOGW(TAG,"closed"); break; }
+            buf[n]='\0';
+            char *save,*ln=strtok_r(buf,"\n",&save);
+            while(ln){
+                bool on = strstr(ln,"LED:ON");
+                if(on || strstr(ln,"LED:OFF")){
+                    led_strip_set_pixel(strip,0,on?32:0,0,0); led_strip_refresh(strip);
+                    uint32_t cyc=esp_cpu_get_cycle_count()-t0;
+                    float ns=cyc*1e9f/cpu, ms=ns/1e6f;
+                    ESP_LOGI(TAG,"LED %s | cycles:%lu %.2f ns (%.6f ms)",on?"ON":"OFF",cyc,ns,ms);
                 }
-                line = strtok_r(NULL, "\n", &saveptr);
+                ln=strtok_r(NULL,"\n",&save);
             }
         }
-        close(sock);
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        close(s);
     }
 }
 
-/* --------------------------- app_main ----------------------------------- */
+/* ---------- main -------------------------------------------------------- */
 void app_main(void)
 {
-    ESP_ERROR_CHECK(nvs_flash_init());
-    wifi_init_sta();
+    nvs_flash_init(); wifi_init();
 
-    /* LED strip init */
-    led_strip_config_t cfg = {
-        .strip_gpio_num         = LED_STRIP_GPIO,
-        .max_leds               = LED_STRIP_COUNT,
-        .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
-        .led_model              = LED_MODEL_WS2812,
-    };
-    led_strip_rmt_config_t rmt = {
-        .clk_src       = RMT_CLK_SRC_DEFAULT,
-        .resolution_hz = 10 * 1000 * 1000
-    };
-    ESP_ERROR_CHECK(led_strip_new_rmt_device(&cfg, &rmt, &led_strip));
-    led_set(false);
+    led_strip_config_t c={.strip_gpio_num=LED_GPIO,.max_leds=LED_COUNT,
+                          .color_component_format=LED_STRIP_COLOR_COMPONENT_FMT_GRB,
+                          .led_model=LED_MODEL_WS2812};
+    led_strip_rmt_config_t r={.clk_src=RMT_CLK_SRC_DEFAULT,.resolution_hz=10*1000000};
+    led_strip_new_rmt_device(&c,&r,&strip);
 
-    BaseType_t ret = xTaskCreate(tcp_client_task, "tcp_client", 4096, NULL, 9, &tcp_task_handle);
-    if (ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create tcp_client task");
-    }
-#if portNUM_PROCESSORS > 1
-    vTaskCoreAffinitySet(tcp_task_handle, 1 << 0); /* pin to core0 */
-#endif
+    xTaskCreate(client,"cli",4096,NULL,9,&cli_task);
 }
