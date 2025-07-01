@@ -1,0 +1,10 @@
+menu "Transport configuration"
+
+config PROTO_BT_ENABLED
+    bool "Use BLE transport"
+    default n
+    help
+      Если включено, будет собираться transport_ble.c.
+      Если выключено — transport_wifi.c.
+
+endmenu

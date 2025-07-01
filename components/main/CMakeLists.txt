@@ -1,0 +1,10 @@
+idf_component_register(
+    SRCS
+        src/app_main.c
+    INCLUDE_DIRS
+        include
+    REQUIRES
+        led_ctrl
+        transport
+        nvs_flash 
+)

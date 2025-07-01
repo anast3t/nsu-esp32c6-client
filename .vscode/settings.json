@@ -18,6 +18,7 @@
     "esp_cpu.h": "c",
     "chrono": "c",
     "esp_bt.h": "c",
-    "nimble_port_freertos.h": "c"
+    "nimble_port_freertos.h": "c",
+    "nimble_port.h": "c"
 }
 }
