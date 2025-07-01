@@ -15,6 +15,9 @@
     "cstdint": "c",
     "nvs_flash.h": "c",
     "led_strip.h": "c",
-    "esp_cpu.h": "c"
+    "esp_cpu.h": "c",
+    "chrono": "c",
+    "esp_bt.h": "c",
+    "nimble_port_freertos.h": "c"
 }
 }
