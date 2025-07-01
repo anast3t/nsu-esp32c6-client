@@ -5,6 +5,8 @@
 
 void app_main(void)
 {
+    esp_log_level_set("*", ESP_LOG_NONE);
+
     ESP_ERROR_CHECK(nvs_flash_init());
 
     // Сначала LED-controller, чтобы transport мог сразу обновлять пиксель

@@ -108,10 +108,10 @@ static void client(void *a)
             FD_SET(s, &rfds);
             tv.tv_sec = 0;
             tv.tv_usec = 20000; /* 20 ms дворник */
-            if (select(s + 1, &rfds, NULL, NULL, &tv) <= 0)
-                continue;
-            uint32_t t0 = esp_cpu_get_cycle_count();
+            // if (select(s + 1, &rfds, NULL, NULL, &tv) <= 0)
+            //     continue;
             int n = recv(s, buf, sizeof(buf) - 1, 0);
+            uint32_t t0 = esp_cpu_get_cycle_count();
             if (n <= 0)
             {
                 ESP_LOGW(TAG, "closed...");
