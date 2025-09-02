@@ -1,9 +1,9 @@
 #pragma once
-#include <stdbool.h>
 #include "esp_err.h"
+#include <stdint.h>
 
-/** Инициализация ленты и GPIO. */
+/** Инициализация ленты WS2812. */
 esp_err_t led_ctrl_init(void);
 
-/** Установить состояние LED (ON=true, OFF=false). */
-void      led_ctrl_set(bool on);
+/** Задать цвет пикселя: r,g,b в диапазоне 0..32 */
+void led_ctrl_set_color(uint8_t r, uint8_t g, uint8_t b);

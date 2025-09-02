@@ -1,12 +1,15 @@
 #include "led_ctrl.h"
 #include "driver/gpio.h"
 #include "led_strip.h"
+#include "esp_err.h"
 
-#define LED_GPIO       8
-#define LED_COUNT      1
+#define LED_GPIO   8
+#define LED_COUNT  1
+
 static led_strip_handle_t strip;
 
 esp_err_t led_ctrl_init(void) {
+    // Настраиваем RMT + WS2812
     led_strip_config_t cfg = {
         .strip_gpio_num = LED_GPIO,
         .max_leds       = LED_COUNT,
@@ -17,32 +20,21 @@ esp_err_t led_ctrl_init(void) {
         .clk_src       = RMT_CLK_SRC_DEFAULT,
         .resolution_hz = 10 * 1000 * 1000
     };
-    return led_strip_new_rmt_device(&cfg, &rmt, &strip);
+    esp_err_t err = led_strip_new_rmt_device(&cfg, &rmt, &strip);
+    if (err == ESP_OK) {
+        // Сразу гасим
+        led_strip_set_pixel(strip, 0, 0, 0, 0);
+        led_strip_refresh(strip);
+    }
+    return err;
 }
 
-void led_ctrl_set(bool on) {
-    led_strip_set_pixel(strip, 0, on ? 32 : 0, 0, 0);
+void led_ctrl_set_color(uint8_t r, uint8_t g, uint8_t b) {
+    // Ограничиваем диапазон 0..32
+    if (r > 32) r = 32;
+    if (g > 32) g = 32;
+    if (b > 32) b = 32;
+    // Рисуем и обновляем
+    led_strip_set_pixel(strip, 0, r, g, b);
     led_strip_refresh(strip);
 }
-
-// esp_err_t led_ctrl_init(void) {
-//     // Настроить GPIO8 как выход без подтягивающих резисторов
-//     gpio_config_t io_conf = {
-//         .pin_bit_mask     = 1ULL << LED_GPIO,
-//         .mode             = GPIO_MODE_OUTPUT,
-//         .pull_up_en       = GPIO_PULLUP_DISABLE,
-//         .pull_down_en     = GPIO_PULLDOWN_DISABLE,
-//         .intr_type        = GPIO_INTR_DISABLE
-//     };
-//     esp_err_t ret = gpio_config(&io_conf);
-//     if (ret == ESP_OK) {
-//         // Инициализируем светодиод в выключенном состоянии
-//         gpio_set_level(LED_GPIO, 0);
-//     }
-//     return ret;
-// }
-
-// void led_ctrl_set(bool on) {
-//     // Включить (1) или выключить (0) GPIO8
-//     gpio_set_level(LED_GPIO, on ? 1 : 0);
-// }

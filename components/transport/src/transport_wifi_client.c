@@ -121,13 +121,20 @@ static void client(void *a)
             char *save, *ln = strtok_r(buf, "\n", &save);
             while (ln)
             {
-                bool on = strstr(ln, "LED:ON");
-                if (on || strstr(ln, "LED:OFF"))
+                uint8_t r, g, b;
+                // пробуем распарсить "COL:R,G,B"
+                if (sscanf(ln, "COL:%hhu,%hhu,%hhu", &r, &g, &b) == 3)
                 {
-                    led_ctrl_set(on);
+                    // меняем цвет
+                    led_ctrl_set_color(r, g, b);
+                    // вычисляем задержку от приёма до обработки
                     uint32_t cyc = esp_cpu_get_cycle_count() - t0;
-                    float ns = cyc * 1e9f / cpu, ms = ns / 1e6f;
-                    ESP_LOGI(TAG, "LED %s | cycles:%lu %.2f ns (%.6f ms)", on ? "ON" : "OFF", cyc, ns, ms);
+                    float us = (float)cyc * 1e6f / cpu;
+                    // логируем новый цвет и время
+                    ESP_LOGI(TAG,
+                             "COLOR R:%u,G:%u,B:%u | cycles:%lu | %.3f µs",
+                             r, g, b,
+                             cyc, us);
                 }
                 ln = strtok_r(NULL, "\n", &save);
             }
@@ -136,7 +143,8 @@ static void client(void *a)
     }
 }
 
-esp_err_t transport_init(){
+esp_err_t transport_init()
+{
     wifi_init();
     xTaskCreatePinnedToCore(client, "tcp", 4096, NULL, 9, NULL, 0);
     return ESP_OK;
